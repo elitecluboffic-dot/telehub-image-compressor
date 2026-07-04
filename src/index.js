@@ -4,9 +4,6 @@ import decodeWebp, { init as initWebpDecode } from '@jsquash/webp/decode';
 import encodeWebp, { init as initWebpEncode } from '@jsquash/webp/encode';
 import optimise, { init as initOxipng } from '@jsquash/oxipng/optimise';
 
-// Import langsung file .wasm sebagai modul -- Wrangler akan meng-compile-nya
-// saat BUILD (bukan runtime), sehingga tidak kena larangan
-// "Wasm code generation disallowed by embedder".
 import JPEG_DEC_WASM from '@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm';
 import JPEG_ENC_WASM from '@jsquash/jpeg/codec/enc/mozjpeg_enc.wasm';
 import WEBP_DEC_WASM from '@jsquash/webp/codec/dec/webp_dec.wasm';
@@ -15,25 +12,24 @@ import OXIPNG_WASM from '@jsquash/oxipng/codec/pkg/squoosh_oxipng_bg.wasm';
 
 // ============================
 // KONFIGURASI
+// Nilai-nilai ini diperkecil khusus supaya muat di jatah CPU time
+// Free plan Cloudflare Workers (sangat terbatas, ~10-50ms per request).
 // ============================
-const MAX_FILE_SIZE = 15 * 1024 * 1024;      // 15MB per file
+const MAX_FILE_SIZE = 3 * 1024 * 1024;       // 3MB per file (diturunkan dari 15MB)
 const EXPIRE_MS = 2 * 24 * 60 * 60 * 1000;   // 2 hari
-const BUCKET_SIZE_LIMIT = 500 * 1024 * 1024; // 500MB, kalau lebih -> bersihin file terlama
+const BUCKET_SIZE_LIMIT = 500 * 1024 * 1024; // 500MB
+const OXIPNG_LEVEL = 1;                       // level 1 = lebih cepat, tetap lossless
 
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*', // ganti ke domain TeleCard kamu di production
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// ============================
-// INISIALISASI WASM (sekali saja per instance Worker)
-// ============================
 let wasmReady = null;
 
 async function ensureWasmReady() {
   if (wasmReady) return wasmReady;
-
   wasmReady = Promise.all([
     initJpegDecode(JPEG_DEC_WASM),
     initJpegEncode(JPEG_ENC_WASM),
@@ -41,7 +37,6 @@ async function ensureWasmReady() {
     initWebpEncode(WEBP_ENC_WASM),
     initOxipng(OXIPNG_WASM),
   ]);
-
   return wasmReady;
 }
 
@@ -72,22 +67,16 @@ function getExtFromMime(mime) {
 
 // ============================
 // KOMPRESI PER FORMAT
-// Semua metode di sini LOSSLESS / NEAR-LOSSLESS -- tidak ada
-// penurunan kualitas visual, ukuran mengecil murni dari optimasi
-// struktur file, penghapusan metadata, dan encoding yang lebih efisien.
 // ============================
 async function compressImage(buffer, mimeType) {
   await ensureWasmReady();
 
   if (mimeType === 'image/png') {
-    // Oxipng: re-kompresi PNG 100% lossless, piksel tidak berubah sama sekali.
-    const optimized = await optimise(buffer, { level: 3 });
+    const optimized = await optimise(buffer, { level: OXIPNG_LEVEL });
     return { buffer: optimized, mimeType: 'image/png' };
   }
 
   if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') {
-    // Decode lalu re-encode pakai mozjpeg kualitas 92 (visually lossless)
-    // + buang metadata EXIF yang tidak perlu.
     const imageData = await decodeJpeg(buffer);
     const encoded = await encodeJpeg(imageData, { quality: 92 });
     return { buffer: encoded, mimeType: 'image/jpeg' };
@@ -103,7 +92,6 @@ async function compressImage(buffer, mimeType) {
     return { buffer: encoded, mimeType: 'image/webp' };
   }
 
-  // Format lain dikembalikan apa adanya (tidak diproses)
   return { buffer, mimeType };
 }
 
@@ -129,7 +117,7 @@ async function handleCompress(request, env) {
   }
 
   if (file.size > MAX_FILE_SIZE) {
-    return jsonResponse({ ok: false, error: 'Ukuran file maksimal 15MB.' }, 400);
+    return jsonResponse({ ok: false, error: 'Ukuran file maksimal 3MB (dibatasi karena server pakai paket gratis).' }, 400);
   }
 
   const originalBuffer = await file.arrayBuffer();
@@ -139,7 +127,11 @@ async function handleCompress(request, env) {
   try {
     result = await compressImage(originalBuffer, file.type);
   } catch (err) {
-    return jsonResponse({ ok: false, error: 'Gagal memproses gambar: ' + err.message }, 500);
+    // Kalau gagal karena kehabisan CPU time, kasih pesan yang jelas ke user
+    return jsonResponse({
+      ok: false,
+      error: 'Gagal memproses gambar. Kemungkinan gambar terlalu berat untuk diproses. Coba gambar yang lebih kecil/sederhana.'
+    }, 500);
   }
 
   const compressedSize = result.buffer.byteLength;
@@ -203,7 +195,7 @@ async function handleDownload(key, env) {
 }
 
 // ============================
-// PEMBERSIHAN OTOMATIS (Cron Trigger, lihat wrangler.toml)
+// PEMBERSIHAN OTOMATIS
 // ============================
 async function cleanupBucket(env) {
   let cursor;
