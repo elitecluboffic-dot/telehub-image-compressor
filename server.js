@@ -40,6 +40,7 @@ const MAX_FILE_SIZE = 15 * 1024 * 1024;      // 15MB per file
 const EXPIRE_MS = 2 * 24 * 60 * 60 * 1000;   // 2 hari
 const OXIPNG_LEVEL = 1;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://telehub.nfy.fyi';
+const STATS_PATH = path.join(STORAGE_DIR, 'stats.json');
 
 if (!fs.existsSync(STORAGE_DIR)) {
   fs.mkdirSync(STORAGE_DIR, { recursive: true });
@@ -98,6 +99,57 @@ function dataPath(key) {
 
 function metaPath(key) {
   return path.join(STORAGE_DIR, `${key}.meta.json`);
+}
+
+// ============================
+// STATISTIK PERSISTEN (lifetime, tidak ikut terhapus saat cleanup)
+// ============================
+const DEFAULT_STATS = {
+  totalCompressed: 0,
+  totalOriginalBytes: 0,
+  totalCompressedBytes: 0,
+  totalSavedBytes: 0,
+  byFormat: {
+    jpg: 0,
+    png: 0,
+    webp: 0,
+    bin: 0,
+  },
+  since: Date.now(),
+  lastUpdatedAt: Date.now(),
+};
+
+function loadStats() {
+  try {
+    if (!fs.existsSync(STATS_PATH)) return { ...DEFAULT_STATS };
+    const raw = JSON.parse(fs.readFileSync(STATS_PATH, 'utf-8'));
+    return { ...DEFAULT_STATS, ...raw, byFormat: { ...DEFAULT_STATS.byFormat, ...(raw.byFormat || {}) } };
+  } catch (e) {
+    console.error('Gagal membaca stats.json, memakai default:', e);
+    return { ...DEFAULT_STATS };
+  }
+}
+
+function saveStats(stats) {
+  const tmpPath = `${STATS_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(stats));
+  fs.renameSync(tmpPath, STATS_PATH); // rename = atomic di level filesystem, hindari file korup kalau proses ke-interupt saat nulis
+}
+
+function recordCompression({ ext, originalSize, compressedSize }) {
+  const stats = loadStats();
+
+  const savedBytes = Math.max(0, originalSize - compressedSize);
+
+  stats.totalCompressed += 1;
+  stats.totalOriginalBytes += originalSize;
+  stats.totalCompressedBytes += compressedSize;
+  stats.totalSavedBytes += savedBytes;
+  stats.byFormat[ext] = (stats.byFormat[ext] || 0) + 1;
+  stats.lastUpdatedAt = Date.now();
+
+  saveStats(stats);
+  return stats;
 }
 
 // ============================
@@ -176,6 +228,14 @@ app.post('/compress', upload.single('image'), async (req, res) => {
       compressedSize,
     }));
 
+    // Update statistik lifetime -- terpisah dari file per-request,
+    // jadi tetap akurat walau file aslinya nanti kehapus pas expired.
+    try {
+      recordCompression({ ext, originalSize, compressedSize });
+    } catch (e) {
+      console.error('Gagal update stats.json:', e);
+    }
+
     const savedBytes = originalSize - compressedSize;
     const savedPercent = originalSize > 0
       ? Math.max(0, Math.round((savedBytes / originalSize) * 100))
@@ -224,6 +284,23 @@ app.get('/download/:key', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="compressed-${metadata.originalName}"`);
   res.setHeader('Cache-Control', 'private, max-age=0');
   return res.sendFile(dPath);
+});
+
+// ============================
+// ROUTE: GET /stats
+// Dipanggil dari backend PHP (server-to-server) buat nampilin statistik
+// lifetime di telehub.nfy.fyi/index.php, contoh:
+//   $json = file_get_contents('https://<railway-app>.up.railway.app/stats');
+//   $stats = json_decode($json, true);
+// ============================
+app.get('/stats', (req, res) => {
+  try {
+    const stats = loadStats();
+    return res.json({ ok: true, stats });
+  } catch (err) {
+    console.error('Gagal membaca statistik:', err);
+    return res.status(500).json({ ok: false, error: 'Gagal mengambil statistik.' });
+  }
 });
 
 // ============================
