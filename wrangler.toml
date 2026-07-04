@@ -1,4 +1,4 @@
-name = "telecard-image-compressor"
+name = "telehub-image-compressor"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 # Bucket R2 untuk simpan file hasil kompresi sementara
 [[r2_buckets]]
 binding = "IMAGE_BUCKET"
-bucket_name = "telecard-compressed-images"
+bucket_name = "telehub-compressed-images"
 
 # Jalan tiap jam untuk hapus file yang udah 2 hari
 # dan jaga-jaga kalau bucket kelewat batas ukuran
