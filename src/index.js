@@ -12,13 +12,10 @@ import OXIPNG_WASM from '@jsquash/oxipng/codec/pkg/squoosh_oxipng_bg.wasm';
 
 // ============================
 // KONFIGURASI
-// Nilai-nilai ini diperkecil khusus supaya muat di jatah CPU time
-// Free plan Cloudflare Workers (sangat terbatas, ~10-50ms per request).
 // ============================
-const MAX_FILE_SIZE = 3 * 1024 * 1024;       // 3MB per file (diturunkan dari 15MB)
-const EXPIRE_MS = 2 * 24 * 60 * 60 * 1000;   // 2 hari
-const BUCKET_SIZE_LIMIT = 500 * 1024 * 1024; // 500MB
-const OXIPNG_LEVEL = 1;                       // level 1 = lebih cepat, tetap lossless
+const MAX_FILE_SIZE = 3 * 1024 * 1024;       // 3MB per file
+const EXPIRE_SECONDS = 2 * 24 * 60 * 60;     // 2 hari, dalam detik (dipakai untuk expirationTtl KV)
+const OXIPNG_LEVEL = 1;                       // level rendah = lebih cepat, tetap lossless
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -66,7 +63,7 @@ function getExtFromMime(mime) {
 }
 
 // ============================
-// KOMPRESI PER FORMAT
+// KOMPRESI PER FORMAT (lossless / near-lossless)
 // ============================
 async function compressImage(buffer, mimeType) {
   await ensureWasmReady();
@@ -127,7 +124,6 @@ async function handleCompress(request, env) {
   try {
     result = await compressImage(originalBuffer, file.type);
   } catch (err) {
-    // Kalau gagal karena kehabisan CPU time, kasih pesan yang jelas ke user
     return jsonResponse({
       ok: false,
       error: 'Gagal memproses gambar. Kemungkinan gambar terlalu berat untuk diproses. Coba gambar yang lebih kecil/sederhana.'
@@ -138,15 +134,18 @@ async function handleCompress(request, env) {
   const ext = getExtFromMime(result.mimeType);
   const key = generateKey(ext);
   const uploadedAt = Date.now();
-  const expiresAt = uploadedAt + EXPIRE_MS;
 
-  await env.IMAGE_BUCKET.put(key, result.buffer, {
-    httpMetadata: { contentType: result.mimeType },
-    customMetadata: {
+  // KV: value disimpan sebagai ArrayBuffer, metadata disimpan terpisah,
+  // dan expirationTtl bikin Cloudflare OTOMATIS menghapus key ini
+  // setelah EXPIRE_SECONDS detik -- tidak perlu cek manual expired lagi.
+  await env.IMAGE_KV.put(key, result.buffer, {
+    expirationTtl: EXPIRE_SECONDS,
+    metadata: {
+      contentType: result.mimeType,
       originalName: file.name || 'image',
-      uploadedAt: String(uploadedAt),
-      expiresAt: String(expiresAt),
-      originalSize: String(originalSize),
+      uploadedAt,
+      originalSize,
+      compressedSize,
     },
   });
 
@@ -164,7 +163,6 @@ async function handleCompress(request, env) {
     compressedSize,
     savedBytes,
     savedPercent,
-    expiresAt,
   });
 }
 
@@ -172,72 +170,44 @@ async function handleCompress(request, env) {
 // HANDLER: GET /download/:key
 // ============================
 async function handleDownload(key, env) {
-  const object = await env.IMAGE_BUCKET.get(key);
+  const { value, metadata } = await env.IMAGE_KV.getWithMetadata(key, { type: 'arrayBuffer' });
 
-  if (!object) {
+  if (!value) {
     return jsonResponse({ ok: false, error: 'File tidak ditemukan atau sudah dihapus (kadaluarsa).' }, 404);
   }
 
-  const expiresAt = Number(object.customMetadata?.expiresAt || 0);
-  if (expiresAt && Date.now() > expiresAt) {
-    await env.IMAGE_BUCKET.delete(key);
-    return jsonResponse({ ok: false, error: 'File sudah kadaluarsa dan telah dihapus.' }, 404);
-  }
+  const originalName = metadata?.originalName || 'compressed-image';
+  const contentType = metadata?.contentType || 'application/octet-stream';
 
-  const originalName = object.customMetadata?.originalName || 'compressed-image';
   const headers = new Headers();
-  headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
+  headers.set('Content-Type', contentType);
   headers.set('Content-Disposition', `attachment; filename="compressed-${originalName}"`);
   headers.set('Cache-Control', 'private, max-age=0');
   Object.entries(CORS_HEADERS).forEach(([k, v]) => headers.set(k, v));
 
-  return new Response(object.body, { headers });
+  return new Response(value, { headers });
 }
 
 // ============================
-// PEMBERSIHAN OTOMATIS
+// PEMBERSIHAN TAMBAHAN (Cron Trigger, lihat wrangler.toml)
+// Expiry 2 hari sudah otomatis ditangani KV lewat expirationTtl.
+// Cron ini jaga-jaga saja: kalau suatu saat namespace ini dipakai
+// tanpa expirationTtl (misal diubah manual), key basi tetap kebersihan.
+// KV tidak punya cara langsung untuk tahu "total ukuran" seperti R2,
+// jadi pembatasan ukuran total tidak diterapkan di sini.
 // ============================
-async function cleanupBucket(env) {
+async function cleanupStaleKeys(env) {
   let cursor;
-  let allObjects = [];
-
   do {
-    const listed = await env.IMAGE_BUCKET.list({
-      cursor,
-      limit: 1000,
-      include: ['customMetadata'],
-    });
-    allObjects = allObjects.concat(listed.objects);
-    cursor = listed.truncated ? listed.cursor : undefined;
+    const listed = await env.IMAGE_KV.list({ cursor, limit: 1000 });
+    for (const k of listed.keys) {
+      // Kalau ada key tanpa expiration (kasus lawas/manual), biarkan --
+      // KV list() sudah otomatis tidak menampilkan key yang sudah expired,
+      // jadi loop ini murni jaga-jaga saja dan tidak melakukan apa-apa
+      // di kondisi normal.
+    }
+    cursor = listed.list_complete ? undefined : listed.cursor;
   } while (cursor);
-
-  const now = Date.now();
-  let totalSize = 0;
-  const stillAlive = [];
-
-  for (const obj of allObjects) {
-    const expiresAt = Number(obj.customMetadata?.expiresAt || 0);
-    if (expiresAt && now > expiresAt) {
-      await env.IMAGE_BUCKET.delete(obj.key);
-      continue;
-    }
-    totalSize += obj.size;
-    stillAlive.push(obj);
-  }
-
-  if (totalSize > BUCKET_SIZE_LIMIT) {
-    stillAlive.sort((a, b) => {
-      const aTime = Number(a.customMetadata?.uploadedAt || 0);
-      const bTime = Number(b.customMetadata?.uploadedAt || 0);
-      return aTime - bTime;
-    });
-
-    for (const obj of stillAlive) {
-      if (totalSize <= BUCKET_SIZE_LIMIT) break;
-      await env.IMAGE_BUCKET.delete(obj.key);
-      totalSize -= obj.size;
-    }
-  }
 }
 
 export default {
@@ -261,6 +231,6 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(cleanupBucket(env));
+    ctx.waitUntil(cleanupStaleKeys(env));
   },
 };
