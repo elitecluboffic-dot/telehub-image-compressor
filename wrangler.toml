@@ -3,9 +3,9 @@ main = "src/index.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-[[r2_buckets]]
-binding = "IMAGE_BUCKET"
-bucket_name = "telehub-compressed-images"
+[[kv_namespaces]]
+binding = "IMAGE_KV"
+id = "6fd566f13ee247cab900f11308aad01f"
 
 [triggers]
 crons = ["0 * * * *"]
