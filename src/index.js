@@ -2,7 +2,7 @@ import decodeJpeg from '@jsquash/jpeg/decode';
 import encodeJpeg from '@jsquash/jpeg/encode';
 import decodeWebp from '@jsquash/webp/decode';
 import encodeWebp from '@jsquash/webp/encode';
-import optimise from '@jsquash/oxipng';
+import { optimise } from '@jsquash/oxipng';
 
 // ============================
 // KONFIGURASI
@@ -12,7 +12,7 @@ const EXPIRE_MS = 2 * 24 * 60 * 60 * 1000;   // 2 hari
 const BUCKET_SIZE_LIMIT = 500 * 1024 * 1024; // 500MB, kalau lebih -> bersihin file terlama
 
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*', // ganti ke domain TeleCard kamu di production, contoh: 'https://telehub.nfy.fyi'
+  'Access-Control-Allow-Origin': 'https://telehub.nfy.fyi',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
