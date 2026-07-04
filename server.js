@@ -36,7 +36,7 @@ const PORT = process.env.PORT || 3000;
 // Kalau di Railway kamu attach sebuah Volume, set STORAGE_DIR ke mount path-nya
 // (misal "/data") lewat environment variable, biar file tidak hilang tiap redeploy.
 const STORAGE_DIR = process.env.STORAGE_DIR || path.join(__dirname, 'storage');
-const MAX_FILE_SIZE = 3 * 1024 * 1024;       // 3MB per file
+const MAX_FILE_SIZE = 15 * 1024 * 1024;      // 15MB per file
 const EXPIRE_MS = 2 * 24 * 60 * 60 * 1000;   // 2 hari
 const OXIPNG_LEVEL = 1;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://telehub.nfy.fyi';
@@ -194,7 +194,7 @@ app.post('/compress', upload.single('image'), async (req, res) => {
   } catch (err) {
     console.error('Unexpected error:', err);
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ ok: false, error: 'Ukuran file maksimal 3MB.' });
+      return res.status(400).json({ ok: false, error: 'Ukuran file maksimal 15MB.' });
     }
     return res.status(500).json({ ok: false, error: 'Terjadi kesalahan pada server.' });
   }
