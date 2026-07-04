@@ -18,7 +18,7 @@ const EXPIRE_SECONDS = 2 * 24 * 60 * 60;     // 2 hari, dalam detik (dipakai unt
 const OXIPNG_LEVEL = 1;                       // level rendah = lebih cepat, tetap lossless
 
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': 'https://telehub.nfy.fyi',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
