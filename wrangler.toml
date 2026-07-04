@@ -6,7 +6,7 @@ workers_dev = true
 
 [[kv_namespaces]]
 binding = "IMAGE_KV"
-id = "6fd566f13ee247cab900f11308aad01f"
+id = "86ec4a4f64c54d53bb65369ad602a166"
 
 [triggers]
 crons = ["0 * * * *"]
