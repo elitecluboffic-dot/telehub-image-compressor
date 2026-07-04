@@ -1,8 +1,17 @@
-import decodeJpeg from '@jsquash/jpeg/decode';
-import encodeJpeg from '@jsquash/jpeg/encode';
-import decodeWebp from '@jsquash/webp/decode';
-import encodeWebp from '@jsquash/webp/encode';
-import { optimise } from '@jsquash/oxipng';
+import decodeJpeg, { init as initJpegDecode } from '@jsquash/jpeg/decode';
+import encodeJpeg, { init as initJpegEncode } from '@jsquash/jpeg/encode';
+import decodeWebp, { init as initWebpDecode } from '@jsquash/webp/decode';
+import encodeWebp, { init as initWebpEncode } from '@jsquash/webp/encode';
+import optimise, { init as initOxipng } from '@jsquash/oxipng/optimise';
+
+// Import langsung file .wasm sebagai modul -- Wrangler akan meng-compile-nya
+// saat BUILD (bukan runtime), sehingga tidak kena larangan
+// "Wasm code generation disallowed by embedder".
+import JPEG_DEC_WASM from '@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm';
+import JPEG_ENC_WASM from '@jsquash/jpeg/codec/enc/mozjpeg_enc.wasm';
+import WEBP_DEC_WASM from '@jsquash/webp/codec/dec/webp_dec.wasm';
+import WEBP_ENC_WASM from '@jsquash/webp/codec/enc/webp_enc.wasm';
+import OXIPNG_WASM from '@jsquash/oxipng/codec/pkg/squoosh_oxipng_bg.wasm';
 
 // ============================
 // KONFIGURASI
@@ -12,10 +21,29 @@ const EXPIRE_MS = 2 * 24 * 60 * 60 * 1000;   // 2 hari
 const BUCKET_SIZE_LIMIT = 500 * 1024 * 1024; // 500MB, kalau lebih -> bersihin file terlama
 
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': 'https://telehub.nfy.fyi',
+  'Access-Control-Allow-Origin': '*', // ganti ke domain TeleCard kamu di production
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
+
+// ============================
+// INISIALISASI WASM (sekali saja per instance Worker)
+// ============================
+let wasmReady = null;
+
+async function ensureWasmReady() {
+  if (wasmReady) return wasmReady;
+
+  wasmReady = Promise.all([
+    initJpegDecode(JPEG_DEC_WASM),
+    initJpegEncode(JPEG_ENC_WASM),
+    initWebpDecode(WEBP_DEC_WASM),
+    initWebpEncode(WEBP_ENC_WASM),
+    initOxipng(OXIPNG_WASM),
+  ]);
+
+  return wasmReady;
+}
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -49,6 +77,8 @@ function getExtFromMime(mime) {
 // struktur file, penghapusan metadata, dan encoding yang lebih efisien.
 // ============================
 async function compressImage(buffer, mimeType) {
+  await ensureWasmReady();
+
   if (mimeType === 'image/png') {
     // Oxipng: re-kompresi PNG 100% lossless, piksel tidak berubah sama sekali.
     const optimized = await optimise(buffer, { level: 3 });
@@ -158,7 +188,6 @@ async function handleDownload(key, env) {
 
   const expiresAt = Number(object.customMetadata?.expiresAt || 0);
   if (expiresAt && Date.now() > expiresAt) {
-    // Sudah lewat 2 hari -- hapus sekarang juga, anggap tidak ada
     await env.IMAGE_BUCKET.delete(key);
     return jsonResponse({ ok: false, error: 'File sudah kadaluarsa dan telah dihapus.' }, 404);
   }
@@ -175,10 +204,6 @@ async function handleDownload(key, env) {
 
 // ============================
 // PEMBERSIHAN OTOMATIS (Cron Trigger, lihat wrangler.toml)
-// 1. Hapus semua file yang sudah lewat 2 hari.
-// 2. Kalau total ukuran bucket masih > BUCKET_SIZE_LIMIT walau belum
-//    2 hari, hapus file dari yang PALING LAMA duluan sampai ukurannya
-//    turun di bawah batas -- supaya storage tidak menumpuk.
 // ============================
 async function cleanupBucket(env) {
   let cursor;
@@ -212,7 +237,7 @@ async function cleanupBucket(env) {
     stillAlive.sort((a, b) => {
       const aTime = Number(a.customMetadata?.uploadedAt || 0);
       const bTime = Number(b.customMetadata?.uploadedAt || 0);
-      return aTime - bTime; // paling lama duluan
+      return aTime - bTime;
     });
 
     for (const obj of stillAlive) {
