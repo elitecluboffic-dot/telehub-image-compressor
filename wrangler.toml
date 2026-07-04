@@ -3,12 +3,12 @@ main = "src/index.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-# Bucket R2 untuk simpan file hasil kompresi sementara
+[limits]
+cpu_ms = 30000
+
 [[r2_buckets]]
 binding = "IMAGE_BUCKET"
 bucket_name = "telehub-compressed-images"
 
-# Jalan tiap jam untuk hapus file yang udah 2 hari
-# dan jaga-jaga kalau bucket kelewat batas ukuran
 [triggers]
 crons = ["0 * * * *"]
