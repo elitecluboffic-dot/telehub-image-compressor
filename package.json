@@ -1,0 +1,18 @@
+{
+  "name": "telecard-image-compressor",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "^1.4.0",
+    "@jsquash/png": "^3.0.1",
+    "@jsquash/webp": "^1.4.0",
+    "@jsquash/oxipng": "^2.1.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  }
+}
